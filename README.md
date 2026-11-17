@@ -1,17 +1,3 @@
----
-title: Aphasia Research Search
-emoji: 🧠
-colorFrom: green
-colorTo: blue
-sdk: gradio
-sdk_version: 6.32.0
-python_version: "3.11"
-app_file: app.py
-pinned: false
-license: mit
-short_description: Semantic search over open-access aphasia research papers
----
-
 # Aphasia Research Search
 
 **Ask the aphasia literature a question in plain English and get back the passages that answer it.**
@@ -20,7 +6,7 @@ A semantic search engine over **44,160 passages from 1,217 open-access research 
 aphasia** (2004–2026), built for the AIPI 510 semantic search activity. Every passage
 carries its paper's title, authors, year, section and link, so each answer can be traced and cited.
 
-- **Live app:** https://huggingface.co/spaces/donburak/aphasia-search
+- **Live app:** https://aphasia-search.streamlit.app
 - **Code and data:** https://github.com/burakdon/aphasia-search
 
 Queries like *"do semantic cues help patients with semantic deficits more than phonemic cues?"* or
@@ -96,22 +82,29 @@ say, Results only.
 
 ## The app
 
-`app.py` (Gradio) embeds the query, searches Chroma, and shows each passage as a card with the
+`app.py` (Streamlit) embeds the query, searches Chroma, and shows each passage as a card with the
 paper title (linked), authors, journal, year, section and a similarity score. Filters: number of
 results, earliest publication year, which sections to search, and at most one passage per paper.
+
+## Hosting
+
+The app runs on [Streamlit Community Cloud](https://streamlit.io/cloud), deployed straight from this
+repository (main file `app.py`, Python 3.11). Hugging Face now requires a PRO subscription for
+Gradio and Streamlit Spaces, even on free hardware. `requirements.txt` installs the CPU-only torch
+build on Linux, because the default wheel pulls in gigabytes of CUDA libraries the app never uses.
 
 ## Run it yourself
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python app.py                 # uses the committed chromadb/
+streamlit run app.py          # uses the committed chromadb/
 python build_index.py         # rebuilds everything from scratch (about 10 minutes)
 ```
 
 ```
 aphasia-search/
-├── app.py               # the search app (Gradio)
+├── app.py               # the search app (Streamlit)
 ├── build_index.py       # fetch → parse → chunk → embed → Chroma
 ├── chromadb/            # the vector database (chroma.sqlite3 + index)
 ├── data/

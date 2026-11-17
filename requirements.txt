@@ -1,6 +1,9 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.14.0+cpu
+# CPU-only torch on Linux (Streamlit Community Cloud): the default PyPI wheel pulls in gigabytes of CUDA libraries
+torch @ https://download.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.11"
+torch @ https://download.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.12"
+torch @ https://download.pytorch.org/whl/cpu/torch-2.14.0%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl ; sys_platform == "linux" and python_version == "3.13"
+torch>=2.4 ; sys_platform != "linux"
 chromadb==1.5.9
 sentence-transformers==6.3.0
-gradio==6.32.0
+streamlit==1.67.0
 requests

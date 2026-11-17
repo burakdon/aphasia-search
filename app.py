@@ -1,21 +1,18 @@
-"""Aphasia Research Search: semantic search over open-access aphasia papers.
+"""Aphasia Research Search: semantic search over open-access aphasia papers (Streamlit).
 
 Loads the Chroma database built by build_index.py (chromadb/: the vectors plus pmcid, section kind
 and year for filtering) and the dataset files it was built from (data/chunks.jsonl for the passage
-text, data/papers.jsonl for citations), embeds the query with the same model, and serves a Gradio
-search page. Run locally with `python app.py`; on Hugging Face Spaces this file is
-the entry point.
+text, data/papers.jsonl for citations), embeds the query with the same model, and shows the
+closest passages.
+
+    streamlit run app.py
 """
 from __future__ import annotations
 
-import html
 import json
 from pathlib import Path
 
-import chromadb
-import gradio as gr
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
 COLLECTION = "aphasia_papers"
@@ -23,54 +20,53 @@ MODEL = "BAAI/bge-small-en-v1.5"
 # bge models expect this instruction in front of short queries (not in front of the passages)
 QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 SECTION_KINDS = ["Abstract", "Introduction", "Methods", "Results", "Discussion", "Conclusion", "Other"]
+EXAMPLES = [
+    "Do semantic cues help patients with semantic deficits more than phonemic cues?",
+    "spaced retrieval practice versus massed practice for naming",
+    "how long do naming therapy gains last after treatment ends",
+    "errorless versus errorful learning in anomia treatment",
+    "transcranial direct current stimulation combined with speech therapy",
+    "app-based aphasia therapy delivered at home",
+]
 
-model = SentenceTransformer(MODEL)
-client = chromadb.PersistentClient(path=str(ROOT / "chromadb"), settings=Settings(anonymized_telemetry=False))
-collection = client.get_collection(COLLECTION)
+st.set_page_config(page_title="Aphasia Research Search", page_icon="🧠", layout="centered")
 
-papers = [json.loads(l) for l in (ROOT / "data" / "papers.jsonl").read_text().splitlines() if l.strip()]
-PAPER = {p["pmcid"]: p for p in papers}
-CHUNK = {}
-with open(ROOT / "data" / "chunks.jsonl", encoding="utf-8") as f:
-    for line in f:
-        r = json.loads(line); CHUNK[r["id"]] = r
-YEARS = sorted(p["year"] for p in papers if p.get("year"))
-MIN_YEAR, MAX_YEAR = (YEARS[0], YEARS[-1]) if YEARS else (1990, 2026)
+
+@st.cache_resource(show_spinner="Loading the embedding model and the index…")
+def load():
+    import chromadb
+    from chromadb.config import Settings
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer(MODEL, device="cpu")
+    client = chromadb.PersistentClient(path=str(ROOT / "chromadb"), settings=Settings(anonymized_telemetry=False))
+    collection = client.get_collection(COLLECTION)
+    papers = {}
+    for line in (ROOT / "data" / "papers.jsonl").read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            p = json.loads(line); papers[p["pmcid"]] = p
+    chunks = {}
+    with open(ROOT / "data" / "chunks.jsonl", encoding="utf-8") as f:
+        for line in f:
+            r = json.loads(line); chunks[r["id"]] = r
+    return model, collection, papers, chunks
 
 
 def short_authors(a: str) -> str:
-    names = [n.strip() for n in a.rstrip(".").split(",") if n.strip()]
+    names = [n.strip() for n in (a or "").rstrip(".").split(",") if n.strip()]
     return names[0] + " et al." if len(names) > 2 else " and ".join(names)
 
 
-def section_path(meta: dict) -> str:
+def section_path(c: dict) -> str:
     """The section path without a head that only repeats the tag (Results > Results > ...)."""
-    parts = [x for x in meta.get("section", "").split(" > ") if x]
-    while parts and parts[0].strip().lower() in (meta.get("section_kind", "").lower(), "abstract", "body"):
+    parts = [x for x in c.get("section", "").split(" > ") if x]
+    while parts and parts[0].strip().lower() in (c.get("section_kind", "").lower(), "abstract", "body"):
         parts = parts[1:]
     return " › ".join(parts)
 
 
-def card(i: int, cid: str, dist: float) -> str:
-    c = CHUNK[cid]; meta = {**PAPER[c["pmcid"]], **c}; doc = c["text"]
-    score = 1 - dist  # cosine similarity
-    doi = f' · <a href="https://doi.org/{html.escape(meta["doi"])}" target="_blank">doi</a>' if meta.get("doi") else ""
-    return f"""
-<div class="hit">
-  <div class="hit-top"><span class="rank">{i}</span>
-    <a class="hit-title" href="{html.escape(meta['url'])}" target="_blank">{html.escape(meta['title'])}</a></div>
-  <div class="hit-meta">{html.escape(short_authors(meta.get('authors', '')))} · {html.escape(meta.get('journal', ''))} · {meta.get('year') or 'n.d.'}{doi}</div>
-  <div class="hit-sec"><span class="tag">{html.escape(meta.get('section_kind', ''))}</span> {html.escape(section_path(meta))}
-    <span class="score" title="cosine similarity between your query and this passage">match {score:.2f}</span></div>
-  <div class="hit-text">{html.escape(doc)}</div>
-</div>"""
-
-
-def search(query: str, k: int, year_from: int, kinds: list[str], one_per_paper: bool) -> str:
-    query = (query or "").strip()
-    if not query:
-        return '<div class="empty">Type a question or topic above.</div>'
-    k = int(k)
+def search(query: str, k: int, year_from: int, kinds: list[str], one_per_paper: bool) -> list[dict]:
+    model, collection, papers, chunks = load()
     conds = [{"year": {"$gte": int(year_from)}}]
     if kinds and set(kinds) != set(SECTION_KINDS):
         conds.append({"section_kind": {"$in": list(kinds)}})
@@ -82,61 +78,61 @@ def search(query: str, k: int, year_from: int, kinds: list[str], one_per_paper: 
     for cid, meta, dist in zip(res["ids"][0], res["metadatas"][0], res["distances"][0]):
         if one_per_paper and meta["pmcid"] in seen:
             continue
-        seen.add(meta["pmcid"]); hits.append((cid, dist))
+        seen.add(meta["pmcid"])
+        c = chunks[cid]
+        hits.append({**papers[c["pmcid"]], **c, "score": 1 - dist})  # cosine similarity
         if len(hits) == k:
             break
+    return hits
+
+
+model, collection, papers, chunks = load()
+years = sorted(p["year"] for p in papers.values() if p.get("year"))
+
+st.title("Aphasia Research Search")
+st.markdown(
+    f"Ask a question in plain English and get the passages from the research literature that answer it, "
+    f"not just keyword hits. Searches **{collection.count():,} passages from {len(papers):,} open-access "
+    f"aphasia papers** ({years[0]}–{years[-1]}, CC BY licensed, via Europe PMC). Every result links to its paper.")
+
+with st.sidebar:
+    st.header("Filters")
+    k = st.slider("Results", 1, 20, 6)
+    year_from = st.slider("Published from", years[0], years[-1], years[0])
+    kinds = st.multiselect("Sections to search", SECTION_KINDS, default=SECTION_KINDS)
+    one = st.checkbox("At most one passage per paper", value=True)
+    st.divider()
+    st.caption("Embeddings: BAAI/bge-small-en-v1.5 · Vector store: Chroma (cosine) · "
+               "[Code and dataset](https://github.com/burakdon/aphasia-search)")
+
+
+def use_example(text: str) -> None:
+    st.session_state.query = text
+
+
+with st.form("search", border=False):
+    st.text_input("Question or topic", key="query",
+                  placeholder="e.g. does spacing practice help word retrieval in aphasia?")
+    st.form_submit_button("Search", type="primary")
+
+with st.expander("Example questions", expanded=not st.session_state.get("query")):
+    cols = st.columns(2)
+    for i, ex in enumerate(EXAMPLES):
+        cols[i % 2].button(ex, key=f"ex{i}", on_click=use_example, args=(ex,), use_container_width=True)
+
+query = (st.session_state.get("query") or "").strip()
+if query:
+    hits = search(query, k, year_from, kinds, one)
     if not hits:
-        return '<div class="empty">No passages match those filters.</div>'
-    return "".join(card(i + 1, *h) for i, h in enumerate(hits))
+        st.info("No passages match those filters.")
+    for i, h in enumerate(hits, 1):
+        with st.container(border=True):
+            st.markdown(f"**{i}. [{h['title']}]({h['url']})**")
+            doi = f" · [doi](https://doi.org/{h['doi']})" if h.get("doi") else ""
+            st.caption(f"{short_authors(h.get('authors', ''))} · {h.get('journal', '')} · {h.get('year') or 'n.d.'}{doi}")
+            st.markdown(f":blue-badge[{h['section_kind']}] {section_path(h)} &nbsp; :gray[match {h['score']:.2f}]")
+            st.write(h["text"])
 
-
-CSS = """
-.hit { text-align: left; border: 1px solid var(--border-color-primary); border-radius: 12px; padding: 14px 16px; margin: 0 0 12px; background: var(--background-fill-secondary); }
-.hit-top { display: flex; gap: 10px; align-items: baseline; }
-.rank { font-weight: 700; color: var(--color-accent); min-width: 1.2em; }
-.hit-title { font-weight: 650; font-size: 1.04em; text-decoration: none; }
-.hit-title:hover { text-decoration: underline; }
-.hit-meta { color: var(--body-text-color-subdued); font-size: .9em; margin: 4px 0 6px 2.2em; }
-.hit-sec { font-size: .86em; color: var(--body-text-color-subdued); margin: 0 0 8px 2.2em; }
-.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--color-accent-soft); color: var(--body-text-color); font-weight: 600; margin-right: 4px; }
-.score { float: right; font-variant-numeric: tabular-nums; }
-.hit-text { margin-left: 2.2em; line-height: 1.55; }
-.empty { color: var(--body-text-color-subdued); padding: 20px 4px; }
-"""
-
-EXAMPLES = [
-    "Do semantic cues help patients with semantic deficits more than phonemic cues?",
-    "spaced retrieval practice versus massed practice for naming",
-    "errorless versus errorful learning in anomia treatment",
-    "how long do naming therapy gains last after treatment ends",
-    "transcranial direct current stimulation combined with speech therapy",
-    "computer or app-based aphasia therapy delivered at home",
-    "predictors of recovery from post-stroke aphasia",
-    "primary progressive aphasia word retrieval treatment",
-]
-
-n_papers, n_chunks = len(papers), collection.count()
-with gr.Blocks(title="Aphasia Research Search") as demo:
-    gr.Markdown(f"""# Aphasia Research Search
-Ask a question in plain English and get the passages from the research literature that answer it, not just keyword hits.
-Searches **{n_chunks:,} passages from {n_papers:,} open-access aphasia papers** ({MIN_YEAR}–{MAX_YEAR}, CC BY licensed, via Europe PMC).
-Every result links to its paper.""")
-    with gr.Row():
-        query = gr.Textbox(label="Question or topic", placeholder="e.g. does spacing practice help word retrieval in aphasia?", scale=5, autofocus=True)
-        go = gr.Button("Search", variant="primary", scale=1)
-    with gr.Accordion("Filters", open=False):
-        with gr.Row():
-            k = gr.Slider(1, 20, value=6, step=1, label="Results")
-            year_from = gr.Slider(MIN_YEAR, MAX_YEAR, value=MIN_YEAR, step=1, label="Published from")
-        kinds = gr.CheckboxGroup(SECTION_KINDS, value=SECTION_KINDS, label="Sections to search")
-        one = gr.Checkbox(value=True, label="At most one passage per paper")
-    out = gr.HTML('<div class="empty">Type a question or topic above, or pick an example.</div>')
-    gr.Examples(EXAMPLES, inputs=query, label="Try")
-    gr.Markdown("""<small>Research prototype for a course activity. Passages are excerpts from papers under CC BY 4.0; cite the original
-paper, linked on each result. Not medical advice.</small>""")
-    inputs = [query, k, year_from, kinds, one]
-    go.click(search, inputs, out)
-    query.submit(search, inputs, out)
-
-if __name__ == "__main__":
-    demo.launch(css=CSS)
+st.divider()
+st.caption("Research prototype for a course activity. Passages are excerpts from papers under CC BY 4.0; cite the "
+           "original paper, linked on each result. Not medical advice.")

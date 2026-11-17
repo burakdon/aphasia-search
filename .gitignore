@@ -6,3 +6,4 @@ build.log
 .gradio/
 data/emb_cache.npy
 data/emb_cache_keys.json
+st.log
